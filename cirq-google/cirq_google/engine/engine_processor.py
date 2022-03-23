@@ -16,9 +16,10 @@ import datetime
 from typing import cast, Dict, Iterable, List, Optional, Sequence, TYPE_CHECKING, Union
 from pytz import utc
 
+from google.protobuf import any_pb2
+
 import cirq
-from cirq_google.engine.client.quantum import types as qtypes
-from cirq_google.engine.client.quantum import enums as qenums
+from cirq_google.cloud import quantum
 from cirq_google.api import v2
 from cirq_google.devices import serializable_device
 from cirq_google.engine import (
@@ -70,7 +71,7 @@ class EngineProcessor(abstract_processor.AbstractProcessor):
         project_id: str,
         processor_id: str,
         context: 'engine_base.EngineContext',
-        _processor: Optional[qtypes.QuantumProcessor] = None,
+        _processor: Optional[quantum.QuantumProcessor] = None,
     ) -> None:
         """A processor available via the engine.
 
@@ -300,7 +301,7 @@ class EngineProcessor(abstract_processor.AbstractProcessor):
             job_labels=job_labels,
         )
 
-    def _inner_processor(self) -> qtypes.QuantumProcessor:
+    def _inner_processor(self) -> quantum.QuantumProcessor:
         if not self._processor:
             self._processor = self.context.client.get_processor(self.project_id, self.processor_id)
         return self._processor
@@ -308,19 +309,19 @@ class EngineProcessor(abstract_processor.AbstractProcessor):
     def health(self) -> str:
         """Returns the current health of processor."""
         self._processor = self.context.client.get_processor(self.project_id, self.processor_id)
-        return qtypes.QuantumProcessor.Health.Name(self._processor.health)
+        return self._processor.health.name
 
     def expected_down_time(self) -> 'Optional[datetime.datetime]':
         """Returns the start of the next expected down time of the processor, if
         set."""
-        if self._inner_processor().HasField('expected_down_time'):
+        if self._inner_processor().expected_down_time is not None:
             return self._inner_processor().expected_down_time.ToDatetime()
         else:
             return None
 
     def expected_recovery_time(self) -> 'Optional[datetime.datetime]':
         """Returns the expected the processor should be available, if set."""
-        if self._inner_processor().HasField('expected_recovery_time'):
+        if self._inner_processor().expected_recovery_time is not None:
             return self._inner_processor().expected_recovery_time.ToDatetime()
         else:
             return None
@@ -336,7 +337,7 @@ class EngineProcessor(abstract_processor.AbstractProcessor):
         Returns:
             Device specification proto if present.
         """
-        if self._inner_processor().HasField('device_spec'):
+        if self._inner_processor().device_spec is not None:
             return v2.device_pb2.DeviceSpecification.FromString(
                 self._inner_processor().device_spec.value
             )
@@ -502,13 +503,13 @@ class EngineProcessor(abstract_processor.AbstractProcessor):
                 'Cannot determine freeze_schedule from processor.'
                 'Call _cancel_reservation or _delete_reservation.'
             )
-        secs_until = reservation.start_time.seconds - int(datetime.datetime.now(tz=utc).timestamp())
+        secs_until = reservation.start_time.timestamp() - datetime.datetime.now().timestamp()
         if secs_until > freeze:
             return self._delete_reservation(reservation_id)
         else:
             return self._cancel_reservation(reservation_id)
 
-    def get_reservation(self, reservation_id: str):
+    def get_reservation(self, reservation_id: str) -> Optional[quantum.QuantumReservation]:
         """Retrieve a reservation given its id."""
         return self.context.client.get_reservation(
             self.project_id, self.processor_id, reservation_id
@@ -540,7 +541,7 @@ class EngineProcessor(abstract_processor.AbstractProcessor):
         self,
         from_time: Union[None, datetime.datetime, datetime.timedelta] = datetime.timedelta(),
         to_time: Union[None, datetime.datetime, datetime.timedelta] = datetime.timedelta(weeks=2),
-    ) -> List[qenums.QuantumTimeSlot]:
+    ) -> List[quantum.QuantumTimeSlot]:
         """Retrieves the reservations from a processor.
 
         Only reservations from this processor and project will be
@@ -569,8 +570,8 @@ class EngineProcessor(abstract_processor.AbstractProcessor):
         self,
         from_time: Union[None, datetime.datetime, datetime.timedelta] = datetime.timedelta(),
         to_time: Union[None, datetime.datetime, datetime.timedelta] = datetime.timedelta(weeks=2),
-        time_slot_type: Optional[qenums.QuantumTimeSlot.TimeSlotType] = None,
-    ) -> List[qenums.QuantumTimeSlot]:
+        time_slot_type: Optional[quantum.QuantumTimeSlot.TimeSlotType] = None,
+    ) -> List[quantum.QuantumTimeSlot]:
         """Retrieves the schedule for a processor.
 
         The schedule may be filtered by time.
@@ -608,7 +609,7 @@ class EngineProcessor(abstract_processor.AbstractProcessor):
         )
 
 
-def _to_calibration(calibration_any: qtypes.any_pb2.Any) -> calibration.Calibration:
+def _to_calibration(calibration_any: any_pb2.Any) -> calibration.Calibration:
     metrics = v2.metrics_pb2.MetricsSnapshot.FromString(calibration_any.value)
     return calibration.Calibration(metrics)
 

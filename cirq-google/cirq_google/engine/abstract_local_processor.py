@@ -19,8 +19,7 @@ from typing import Dict, List, Optional, TYPE_CHECKING, Union
 from google.protobuf.timestamp_pb2 import Timestamp
 
 from cirq_google.engine import calibration
-from cirq_google.engine.client.quantum import types as qtypes
-from cirq_google.engine.client.quantum import enums as qenums
+from cirq_google.cloud import quantum
 from cirq_google.engine.abstract_processor import AbstractProcessor
 from cirq_google.engine.abstract_program import AbstractProgram
 
@@ -64,30 +63,30 @@ class AbstractLocalProcessor(AbstractProcessor):
         engine: Optional['AbstractEngine'] = None,
         expected_down_time: Optional[datetime.datetime] = None,
         expected_recovery_time: Optional[datetime.datetime] = None,
-        schedule: Optional[List[qtypes.QuantumTimeSlot]] = None,
+        schedule: Optional[List[quantum.QuantumTimeSlot]] = None,
         project_name: str = 'fake_project',
     ):
         self._engine = engine
         self._expected_recovery_time = expected_recovery_time
         self._expected_down_time = expected_down_time
-        self._reservations: Dict[str, qtypes.QuantumReservation] = {}
+        self._reservations: Dict[str, quantum.QuantumReservation] = {}
         self._resource_id_counter = 0
         self._processor_id = processor_id
         self._project_name = project_name
 
         if schedule is None:
             self._schedule = [
-                qtypes.QuantumTimeSlot(
+                quantum.QuantumTimeSlot(
                     processor_name=self._processor_id,
-                    slot_type=qenums.QuantumTimeSlot.TimeSlotType.UNALLOCATED,
+                    time_slot_type=quantum.QuantumTimeSlot.TimeSlotType.UNALLOCATED,
                 )
             ]
         else:
             self._schedule = copy.copy(schedule)
-            self._schedule.sort(key=lambda t: t.start_time.seconds or -1)
+            self._schedule.sort(key=lambda t: t.start_time.timestamp() if t.start_time else -1)
 
         for idx in range(len(self._schedule) - 1):
-            if self._schedule[idx].end_time.seconds > self._schedule[idx + 1].start_time.seconds:
+            if self._schedule[idx].end_time > self._schedule[idx + 1].start_time:
                 raise ValueError('Time slots cannot overlap!')
 
     @property
@@ -129,17 +128,17 @@ class AbstractLocalProcessor(AbstractProcessor):
         )
 
     def _reservation_to_time_slot(
-        self, reservation: qtypes.QuantumReservation
-    ) -> qtypes.QuantumTimeSlot:
+        self, reservation: quantum.QuantumReservation
+    ) -> quantum.QuantumTimeSlot:
         """Changes a reservation object into a time slot object."""
-        return qtypes.QuantumTimeSlot(
+        return quantum.QuantumTimeSlot(
             processor_name=self._processor_id,
-            start_time=Timestamp(seconds=reservation.start_time.seconds),
-            end_time=Timestamp(seconds=reservation.end_time.seconds),
-            slot_type=qenums.QuantumTimeSlot.TimeSlotType.RESERVATION,
+            start_time=reservation.start_time,
+            end_time=reservation.end_time,
+            time_slot_type=quantum.QuantumTimeSlot.TimeSlotType.RESERVATION,
         )
 
-    def _insert_reservation_into(self, time_slot: qtypes.QuantumTimeSlot) -> None:
+    def _insert_reservation_into(self, time_slot: quantum.QuantumTimeSlot) -> None:
         """Inserts a new reservation time slot into the ordered schedule.
 
         If this reservation overlaps with existing time slots, these slots will be
@@ -176,17 +175,17 @@ class AbstractLocalProcessor(AbstractProcessor):
                     #    [---time_slot---]
                     # [-------------t---------]
                     # t should be split
-                    start = qtypes.QuantumTimeSlot(
+                    start = quantum.QuantumTimeSlot(
                         processor_name=self._processor_id,
                         end_time=Timestamp(seconds=time_slot.start_time.seconds),
-                        slot_type=t.slot_type,
+                        time_slot_type=t.slot_type,
                     )
                     if t.start_time.seconds:
                         start.start_time.seconds = t.start_time.seconds
-                    end = qtypes.QuantumTimeSlot(
+                    end = quantum.QuantumTimeSlot(
                         processor_name=self._processor_id,
                         start_time=Timestamp(seconds=time_slot.end_time.seconds),
-                        slot_type=t.slot_type,
+                        time_slot_type=t.slot_type,
                     )
                     if t.end_time.seconds:
                         end.end_time.seconds = t.end_time.seconds
@@ -207,10 +206,10 @@ class AbstractLocalProcessor(AbstractProcessor):
             new_schedule.append(time_slot)
         self._schedule = new_schedule
 
-    def _is_available(self, time_slot: qtypes.QuantumTimeSlot) -> bool:
+    def _is_available(self, time_slot: quantum.QuantumTimeSlot) -> bool:
         """Returns True if the slot is available for reservation."""
         for t in self._schedule:
-            if t.slot_type == qenums.QuantumTimeSlot.TimeSlotType.UNALLOCATED:
+            if t.slot_type == quantum.QuantumTimeSlot.TimeSlotType.UNALLOCATED:
                 continue
             if t.end_time.seconds and t.end_time.seconds <= time_slot.start_time.seconds:
                 continue
@@ -224,7 +223,7 @@ class AbstractLocalProcessor(AbstractProcessor):
         start_time: datetime.datetime,
         end_time: datetime.datetime,
         whitelisted_users: Optional[List[str]] = None,
-    ) -> qtypes.QuantumReservation:
+    ) -> quantum.QuantumReservation:
         """Creates a reservation on this processor.
 
         Args:
@@ -240,7 +239,7 @@ class AbstractLocalProcessor(AbstractProcessor):
         if end_time < start_time:
             raise ValueError('End time of reservation must be after the start time')
         reservation_id = self._create_id()
-        new_reservation = qtypes.QuantumReservation(
+        new_reservation = quantum.QuantumReservation(
             name=reservation_id,
             start_time=Timestamp(seconds=int(start_time.timestamp())),
             end_time=Timestamp(seconds=int(end_time.timestamp())),
@@ -259,7 +258,7 @@ class AbstractLocalProcessor(AbstractProcessor):
         if reservation_id in self._reservations:
             del self._reservations[reservation_id]
 
-    def get_reservation(self, reservation_id: str) -> qtypes.QuantumReservation:
+    def get_reservation(self, reservation_id: str) -> Optional[quantum.QuantumReservation]:
         """Retrieve a reservation given its id."""
         if reservation_id in self._reservations:
             return self._reservations[reservation_id]
@@ -305,7 +304,7 @@ class AbstractLocalProcessor(AbstractProcessor):
         self,
         from_time: Union[None, datetime.datetime, datetime.timedelta] = datetime.timedelta(),
         to_time: Union[None, datetime.datetime, datetime.timedelta] = datetime.timedelta(weeks=2),
-    ) -> List[qtypes.QuantumReservation]:
+    ) -> List[quantum.QuantumReservation]:
         """Retrieves the reservations from a processor.
 
         Only reservations from this processor and project will be
@@ -341,8 +340,8 @@ class AbstractLocalProcessor(AbstractProcessor):
         self,
         from_time: Union[None, datetime.datetime, datetime.timedelta] = datetime.timedelta(),
         to_time: Union[None, datetime.datetime, datetime.timedelta] = datetime.timedelta(weeks=2),
-        time_slot_type: Optional[qenums.QuantumTimeSlot.TimeSlotType] = None,
-    ) -> List[qtypes.QuantumTimeSlot]:
+        time_slot_type: Optional[quantum.QuantumTimeSlot.TimeSlotType] = None,
+    ) -> List[quantum.QuantumTimeSlot]:
         """Retrieves the schedule for a processor.
 
         The schedule may be filtered by time.
@@ -365,7 +364,7 @@ class AbstractLocalProcessor(AbstractProcessor):
         Returns:
             Time slots that fit the criteria.
         """
-        time_slots: List[qtypes.QuantumTimeSlot] = []
+        time_slots: List[quantum.QuantumTimeSlot] = []
         start_timestamp = _to_timestamp(from_time)
         end_timestamp = _to_timestamp(to_time)
         for slot in self._schedule:
